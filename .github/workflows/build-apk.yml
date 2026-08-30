@@ -1,285 +1,36 @@
-package com.example.photocompressor;
-
-import android.content.*;
-import android.graphics.*;
-import android.net.Uri;
-import android.os.*;
-import android.provider.MediaStore;
-import android.view.*;
-import android.widget.*;
-import androidx.appcompat.app.AppCompatActivity;
-import java.io.*;
-
-public class MainActivity extends AppCompatActivity {
-
-    private ImageView preview;
-    private TextView info;
-    private Button compressBtn, saveBtn;
-    private Uri selectedUri;
-    private byte[] compressedData;
-
-    static final int PICK = 10;
-    static final int TARGET = 50 * 1024;
-
-    @Override
-    public void onCreate(Bundle b) {
-        super.onCreate(b);
-        setContentView(R.layout.activity_main);
-
-        preview = findViewById(R.id.preview);
-        info = findViewById(R.id.info);
-
-        Button select = findViewById(R.id.selectBtn);
-        compressBtn = findViewById(R.id.compressBtn);
-        saveBtn = findViewById(R.id.saveBtn);
-
-        select.setOnClickListener(v -> pickImage());
-        compressBtn.setOnClickListener(v -> compress());
-        saveBtn.setOnClickListener(v -> save());
-    }
-
-    private void pickImage() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.setType("image/*");
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        startActivityForResult(i, PICK);
-    }
-
-    @Override
-    protected void onActivityResult(int r, int c, Intent d) {
-        super.onActivityResult(r, c, d);
-
-        if (r == PICK && c == RESULT_OK && d != null) {
-            selectedUri = d.getData();
-
-            try {
-                getContentResolver().takePersistableUriPermission(
-                        selectedUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                );
-            } catch (Exception ignored) {
-            }
-
-            preview.setImageURI(selectedUri);
-            info.setText("Image selected. Tap Compress.");
-
-            compressBtn.setEnabled(true);
-            saveBtn.setEnabled(false);
-        }
-    }
-
-    private Bitmap loadBitmap(Uri uri) throws Exception {
-        BitmapFactory.Options o = new BitmapFactory.Options();
-        o.inPreferredConfig = Bitmap.Config.RGB_565;
-
-        return BitmapFactory.decodeStream(
-                getContentResolver().openInputStream(uri),
-                null,
-                o
-        );
-    }
-
-    private void compress() {
-        if (selectedUri == null) return;
-
-        info.setText("Compressing…");
-        compressBtn.setEnabled(false);
-
-        new Thread(() -> {
-            try {
-                Bitmap src = loadBitmap(selectedUri);
-
-                Bitmap best = null;
-                byte[] bestBytes = null;
-
-                int[] widths = {
-                        1600, 1400, 1200, 1000,
-                        900, 800, 700, 600,
-                        500, 400, 350, 300
-                };
-
-                for (int w : widths) {
-
-                    int h = Math.max(
-                            1,
-                            (int) ((long) src.getHeight() * w / src.getWidth())
-                    );
-
-                    Bitmap scaled = Bitmap.createScaledBitmap(
-                            src,
-                            w,
-                            h,
-                            true
-                    );
-
-                    byte[] data = findQuality(scaled, TARGET);
-
-                    if (data.length <= TARGET) {
-                        best = scaled;
-                        bestBytes = data;
-                        break;
-                    }
-
-                    if (bestBytes == null ||
-                            data.length < bestBytes.length) {
-
-                        best = scaled;
-                        bestBytes = data;
-                    }
-                }
-
-                // Important: make final copies for lambda
-                final Bitmap finalBest = best;
-                final byte[] finalBestBytes = bestBytes;
-
-                compressedData = finalBestBytes;
-
-                final int kb =
-                        (finalBestBytes.length + 1023) / 1024;
-
-                runOnUiThread(() -> {
-
-                    preview.setImageBitmap(finalBest);
-
-                    if (finalBestBytes.length <= TARGET) {
-
-                        info.setText(
-                                "Compressed size: "
-                                        + kb
-                                        + " KB ✓"
-                        );
-
-                    } else {
-
-                        info.setText(
-                                "Compressed size: "
-                                        + kb
-                                        + " KB\n"
-                                        + "Could not reach 50 KB."
-                        );
-                    }
-
-                    saveBtn.setEnabled(true);
-                    compressBtn.setEnabled(true);
-                });
-
-            } catch (Exception e) {
-
-                runOnUiThread(() -> {
-
-                    info.setText(
-                            "Compression failed: "
-                                    + e.getMessage()
-                    );
-
-                    compressBtn.setEnabled(true);
-                });
-            }
-        }).start();
-    }
-
-    private byte[] findQuality(Bitmap bmp, int target) {
-
-        int lo = 5;
-        int hi = 95;
-
-        byte[] best = null;
-
-        while (lo <= hi) {
-
-            int q = (lo + hi) / 2;
-
-            ByteArrayOutputStream out =
-                    new ByteArrayOutputStream();
-
-            bmp.compress(
-                    Bitmap.CompressFormat.JPEG,
-                    q,
-                    out
-            );
-
-            byte[] b = out.toByteArray();
-
-            if (b.length <= target) {
-
-                best = b;
-                lo = q + 1;
-
-            } else {
-
-                hi = q - 1;
-            }
-        }
-
-        if (best != null) {
-            return best;
-        }
-
-        ByteArrayOutputStream out =
-                new ByteArrayOutputStream();
-
-        bmp.compress(
-                Bitmap.CompressFormat.JPEG,
-                5,
-                out
-        );
-
-        return out.toByteArray();
-    }
-
-    private void save() {
-
-        if (compressedData == null) return;
-
-        String name =
-                "compressed_50kb_"
-                        + System.currentTimeMillis()
-                        + ".jpg";
-
-        ContentValues v = new ContentValues();
-
-        v.put(
-                MediaStore.Images.Media.DISPLAY_NAME,
-                name
-        );
-
-        v.put(
-                MediaStore.Images.Media.MIME_TYPE,
-                "image/jpeg"
-        );
-
-        v.put(
-                MediaStore.Images.Media.RELATIVE_PATH,
-                "Pictures/PhotoCompressor50KB"
-        );
-
-        Uri out =
-                getContentResolver().insert(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        v
-                );
-
-        try {
-
-            OutputStream os =
-                    getContentResolver().openOutputStream(out);
-
-            os.write(compressedData);
-            os.close();
-
-            Toast.makeText(
-                    this,
-                    "Saved to Pictures/PhotoCompressor50KB",
-                    Toast.LENGTH_LONG
-            ).show();
-
-        } catch (Exception e) {
-
-            Toast.makeText(
-                    this,
-                    "Save failed",
-                    Toast.LENGTH_SHORT
-            ).show();
-        }
-    }
-}
+name: Build Photo Compressor APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract Android project
+        run: |
+          unzip -o PhotoCompressor50KB_source.zip -d project
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build APK
+        run: |
+          cd project
+          gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoCompressor50KB-APK
+          path: project/app/build/outputs/apk/debug/app-debug.apk
